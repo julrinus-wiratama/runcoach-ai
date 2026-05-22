@@ -1,0 +1,14 @@
+[server]
+headless = true
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#fc4c02"          # Strava orange
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f7f9fc"
+textColor = "#1a202c"
+font = "sans serif"
