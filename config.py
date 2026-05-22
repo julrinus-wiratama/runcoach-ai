@@ -31,6 +31,12 @@ def _secret(key: str, default: str = "") -> str:
 DB_PATH = ROOT / "data" / "runcoach.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# ---- Database URL ----
+# Kalau DATABASE_URL diset (di Streamlit Cloud secrets atau env), pakai itu
+# (Postgres / external SQLite). Kalau tidak, fallback ke SQLite lokal.
+# Format Postgres: postgresql://user:pass@host:port/dbname
+DATABASE_URL = _secret("DATABASE_URL", f"sqlite:///{DB_PATH}")
+
 # ---- Strava API ----
 STRAVA_CLIENT_ID = _secret("STRAVA_CLIENT_ID")
 STRAVA_CLIENT_SECRET = _secret("STRAVA_CLIENT_SECRET")

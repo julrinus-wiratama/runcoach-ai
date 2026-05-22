@@ -63,23 +63,19 @@ st.markdown(
 # Multi-user session helpers
 # ---------------------------------------------------------
 def current_user_id() -> Optional[int]:
-    """Return current logged-in Strava athlete_id, or None."""
+    """
+    Return current logged-in Strava athlete_id, or None.
+
+    SECURITY: Hanya session_state yang valid sebagai sumber identity.
+    URL query param (?u=...) TIDAK boleh dipakai — itu impersonation vector
+    (siapa pun yang punya URL bisa pretend jadi user lain).
+    Session_state cuma di-set lewat OAuth callback yang valid.
+    """
     uid = st.session_state.get("user_id")
     if uid is not None:
         try:
             return int(uid)
         except (ValueError, TypeError):
-            pass
-    # Fallback: ?u=<athlete_id> in URL (memungkinkan tab-baru pakai user yang sama)
-    qp = st.query_params
-    if "u" in qp:
-        try:
-            uid = int(qp["u"])
-            # Validasi: user_id ini harus pernah connect (ada di DB)
-            if db.get_user(uid):
-                st.session_state["user_id"] = uid
-                return uid
-        except ValueError:
             pass
     return None
 
@@ -134,9 +130,8 @@ def handle_oauth_callback():
                     with st.expander("Data migration details"):
                         st.json(moved)
 
-            # Bersihin URL biar gak nge-trigger ulang
+            # Bersihin URL — JANGAN simpan user_id di URL (impersonation vector)
             st.query_params.clear()
-            st.query_params["u"] = str(user_id)
             st.success(f"Berhasil connect ke Strava sebagai **{athlete_name_for(user_id)}**! "
                        "Klik 'Sync activities' di sidebar buat narik lari Anda.")
         except Exception as e:
@@ -159,39 +154,25 @@ def show_landing():
         dan kasih analisis training load, zone breakdown, race prediction,
         AI coach, dan training plan adaptive.
 
-        Setiap user pakai akun Strava masing-masing — datanya **100% terpisah**.
+        Setiap user pakai akun Strava masing-masing — datanya **100% terpisah**
+        dan hanya bisa diakses dengan login Strava akun itu.
         """
     )
 
-    known_users = db.list_users()
-    if known_users:
-        st.divider()
-        st.subheader("👋 Pernah connect sebelumnya?")
-        st.caption("Lanjutkan sebagai salah satu user yang sudah pernah connect:")
-        cols = st.columns(min(len(known_users), 3))
-        for i, u in enumerate(known_users):
-            try:
-                a = _json.loads(u["athlete_json"] or "{}")
-                name = f"{a.get('firstname','')} {a.get('lastname','')}".strip() or f"User #{u['user_id']}"
-            except Exception:
-                name = f"User #{u['user_id']}"
-            with cols[i % len(cols)]:
-                if st.button(f"Continue as {name}",
-                             use_container_width=True,
-                             key=f"resume_{u['user_id']}"):
-                    st.session_state["user_id"] = u["user_id"]
-                    st.query_params["u"] = str(u["user_id"])
-                    st.rerun()
-
-    st.divider()
-    st.subheader("✨ User baru?")
     creds_ok = bool(config.STRAVA_CLIENT_ID and config.STRAVA_CLIENT_SECRET)
     if not creds_ok:
         st.error("Strava API keys belum di-set. Admin perlu konfigurasi secrets dulu.")
         st.stop()
+
+    st.divider()
     st.link_button("🚴 Connect with Strava", sc.build_authorize_url(),
                    use_container_width=True, type="primary")
-    st.caption("Anda akan diarahkan ke Strava untuk authorize akses read-only ke aktivitas.")
+    st.caption(
+        "Anda akan diarahkan ke Strava untuk authorize akses read-only ke aktivitas. "
+        "Kalau sudah pernah authorize sebelumnya, Strava akan langsung redirect "
+        "kembali ke sini (1 klik). Tidak perlu password tambahan — identitas Anda "
+        "dijamin oleh login Strava."
+    )
 
 
 # Gate: kalau gak ada user, tampilin landing dan stop

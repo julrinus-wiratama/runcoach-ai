@@ -2,6 +2,7 @@
 .venv/
 venv/
 data/
+*.pre_migrate_*.db
 __pycache__/
 *.pyc
 *.pyo
