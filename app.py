@@ -199,54 +199,57 @@ def current_profile() -> dict:
 @st.cache_data(ttl=600, show_spinner="Loading your runs…")
 def _load_runs_for_user(user_id: int) -> pd.DataFrame:
     """
-    Load runs untuk user. FAST path: pakai TSS/IF yang sudah cached di DB.
-    Lazy compute: kalau ada baris yang TSS-nya NULL, compute on-demand &
-    persist ke DB biar load berikutnya gak perlu compute lagi.
+    Pure DB read. Gak ada compute on-the-fly biar page load CEPET.
+    Activity yang TSS-nya NULL akan tetap NULL — user bisa klik
+    'Backfill training load' di Settings page untuk hitung sekaligus.
     """
     df = db.get_activities_df(user_id, sport_filter="Run")
     if df.empty:
         return df
-
-    # Fast pace (no DB hit needed, derived from average_speed_mps)
+    # Derivasi cepat dari kolom yang sudah ada (no DB write, no stream fetch)
     if "average_pace_min_per_km" not in df.columns or df["average_pace_min_per_km"].isna().any():
         df["average_pace_min_per_km"] = df["average_speed_mps"].apply(A.mps_to_pace_min_per_km)
-
-    # VO2max estimate (no DB hit needed)
     if "estimated_vo2max" not in df.columns or df["estimated_vo2max"].isna().any():
         df["estimated_vo2max"] = df.apply(
             lambda r: A.estimate_vo2max_from_race(r.get("distance_m"), r.get("moving_time_s")),
             axis=1,
         )
+    return df
 
-    # Lazy TSS/IF compute (only for rows where tss is NULL) + persist to DB
-    missing_tss = df[df["tss"].isna()] if "tss" in df.columns else df
-    if not missing_tss.empty:
-        profile = db.get_profile(user_id) or config.DEFAULT_PROFILE
-        for idx, row in missing_tss.iterrows():
+
+def backfill_training_load(user_id: int, progress_cb=None) -> int:
+    """
+    Hitung & persist TSS+IF untuk semua activities yang masih NULL.
+    Dipanggil sekali dari Settings page. Return jumlah row yang di-backfill.
+    """
+    df = db.get_activities_df(user_id, sport_filter="Run")
+    if df.empty:
+        return 0
+    missing = df[df["tss"].isna()] if "tss" in df.columns else df
+    if missing.empty:
+        return 0
+    profile = db.get_profile(user_id) or config.DEFAULT_PROFILE
+    n = 0
+    total = len(missing)
+    for i, (_, row) in enumerate(missing.iterrows()):
+        try:
             streams = db.get_streams(int(row["id"]))
             t, intf = A.best_tss(row, streams, profile)
-            df.at[idx, "tss"] = t
-            df.at[idx, "intensity_factor"] = intf
-            # Persist ke DB biar load berikutnya skip compute.
-            # Wrap di try/except: kalau UPDATE gagal, cache miss OK,
-            # app tetap jalan (cuma load berikutnya lebih lambat).
-            try:
-                db.update_activity_metrics(user_id, int(row["id"]), {
-                    "tss": float(t) if t is not None else None,
-                    "intensity_factor": float(intf) if intf is not None else None,
-                    "average_pace_min_per_km": (
-                        float(df.at[idx, "average_pace_min_per_km"])
-                        if pd.notna(df.at[idx, "average_pace_min_per_km"]) else None
-                    ),
-                    "estimated_vo2max": (
-                        float(df.at[idx, "estimated_vo2max"])
-                        if pd.notna(df.at[idx, "estimated_vo2max"]) else None
-                    ),
-                    "normalized_pace_min_per_km": None,
-                })
-            except Exception:
-                pass  # Best-effort cache; failure non-fatal
-    return df
+            ap = A.mps_to_pace_min_per_km(row.get("average_speed_mps"))
+            vo2 = A.estimate_vo2max_from_race(row.get("distance_m"), row.get("moving_time_s"))
+            db.update_activity_metrics(user_id, int(row["id"]), {
+                "tss": float(t) if t is not None else None,
+                "intensity_factor": float(intf) if intf is not None else None,
+                "average_pace_min_per_km": float(ap) if ap is not None else None,
+                "estimated_vo2max": float(vo2) if vo2 is not None else None,
+                "normalized_pace_min_per_km": None,
+            })
+            n += 1
+        except Exception:
+            pass  # skip yang gagal, lanjut berikutnya
+        if progress_cb:
+            progress_cb(i + 1, total, row.get("name", ""))
+    return n
 
 
 def load_runs() -> pd.DataFrame:
@@ -1841,9 +1844,37 @@ These values drive TSS, IF, and all your zone analyses. Update them after any fi
     """)
 
     st.divider()
+    st.subheader("⚡ Training load backfill")
+    st.markdown(
+        "Hitung TSS & Intensity Factor untuk semua activities yang belum punya nilai-nilai itu. "
+        "Tanpa backfill, **PMC chart, Race Predictor, dan AI Coach gak punya data** untuk activity tersebut. "
+        "Operasi ini cuma perlu di-run sekali — hasilnya disimpan permanen di database."
+    )
+    df_check = load_runs()
+    missing_count = int(df_check["tss"].isna().sum()) if not df_check.empty and "tss" in df_check.columns else 0
+    if missing_count == 0:
+        st.success(f"✅ Semua {len(df_check)} activities sudah punya training load. No backfill needed.")
+    else:
+        st.warning(f"⚠️ {missing_count} dari {len(df_check)} activities belum punya TSS. Klik tombol di bawah untuk hitung.")
+        if st.button("⚡ Backfill training load sekarang", type="primary"):
+            pbar = st.progress(0.0, text="Starting backfill…")
+
+            def _cb(done, total, name):
+                pbar.progress(done / max(total, 1),
+                              text=f"Backfilling {done}/{total}: {name[:50]}")
+
+            with st.spinner("Computing TSS untuk activities… (~1-2 menit, tergantung jumlah)"):
+                n_done = backfill_training_load(current_user_id(), progress_cb=_cb)
+            pbar.empty()
+            clear_caches()
+            st.success(f"✅ Done! {n_done} activities di-backfill.")
+            st.balloons()
+            st.rerun()
+
+    st.divider()
     st.subheader("Data")
     n = db.count_activities(current_user_id())
-    st.write(f"**{n}** activities stored locally in `data/runcoach.db`")
+    st.write(f"**{n}** activities stored in database")
     if st.button("Recompute all metrics"):
         clear_caches()
         st.success("Cleared cache — metrics will recompute on next page load.")
