@@ -227,13 +227,25 @@ def _load_runs_for_user(user_id: int) -> pd.DataFrame:
             t, intf = A.best_tss(row, streams, profile)
             df.at[idx, "tss"] = t
             df.at[idx, "intensity_factor"] = intf
-            # Persist ke DB biar load berikutnya skip compute
-            db.update_activity_metrics(user_id, int(row["id"]), {
-                "tss": t, "intensity_factor": intf,
-                "average_pace_min_per_km": df.at[idx, "average_pace_min_per_km"],
-                "estimated_vo2max": df.at[idx, "estimated_vo2max"],
-                "normalized_pace_min_per_km": None,
-            })
+            # Persist ke DB biar load berikutnya skip compute.
+            # Wrap di try/except: kalau UPDATE gagal, cache miss OK,
+            # app tetap jalan (cuma load berikutnya lebih lambat).
+            try:
+                db.update_activity_metrics(user_id, int(row["id"]), {
+                    "tss": float(t) if t is not None else None,
+                    "intensity_factor": float(intf) if intf is not None else None,
+                    "average_pace_min_per_km": (
+                        float(df.at[idx, "average_pace_min_per_km"])
+                        if pd.notna(df.at[idx, "average_pace_min_per_km"]) else None
+                    ),
+                    "estimated_vo2max": (
+                        float(df.at[idx, "estimated_vo2max"])
+                        if pd.notna(df.at[idx, "estimated_vo2max"]) else None
+                    ),
+                    "normalized_pace_min_per_km": None,
+                })
+            except Exception:
+                pass  # Best-effort cache; failure non-fatal
     return df
 
 

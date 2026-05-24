@@ -651,18 +651,20 @@ def update_activity_metrics(user_id: int, activity_id: int, metrics: Dict[str, A
         c.execute(
             text(
                 "UPDATE activities SET "
-                "tss = :tss, intensity_factor = :if_, "
-                "normalized_pace_min_per_km = :np, "
-                "average_pace_min_per_km = :ap, "
-                "estimated_vo2max = :vo2 "
-                "WHERE user_id = :uid AND id = :aid"
+                "tss = :p_tss, intensity_factor = :p_intf, "
+                "normalized_pace_min_per_km = :p_np, "
+                "average_pace_min_per_km = :p_ap, "
+                "estimated_vo2max = :p_vo2 "
+                "WHERE user_id = :p_uid AND id = :p_aid"
             ),
             {
-                "tss": metrics.get("tss"), "if_": metrics.get("intensity_factor"),
-                "np": metrics.get("normalized_pace_min_per_km"),
-                "ap": metrics.get("average_pace_min_per_km"),
-                "vo2": metrics.get("estimated_vo2max"),
-                "uid": user_id, "aid": activity_id,
+                "p_tss": metrics.get("tss"),
+                "p_intf": metrics.get("intensity_factor"),
+                "p_np": metrics.get("normalized_pace_min_per_km"),
+                "p_ap": metrics.get("average_pace_min_per_km"),
+                "p_vo2": metrics.get("estimated_vo2max"),
+                "p_uid": user_id,
+                "p_aid": activity_id,
             },
         )
 
