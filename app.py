@@ -196,26 +196,44 @@ def current_profile() -> dict:
 # ---------------------------------------------------------
 # Data loaders (cached)
 # ---------------------------------------------------------
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner="Loading your runs…")
 def _load_runs_for_user(user_id: int) -> pd.DataFrame:
+    """
+    Load runs untuk user. FAST path: pakai TSS/IF yang sudah cached di DB.
+    Lazy compute: kalau ada baris yang TSS-nya NULL, compute on-demand &
+    persist ke DB biar load berikutnya gak perlu compute lagi.
+    """
     df = db.get_activities_df(user_id, sport_filter="Run")
     if df.empty:
         return df
-    # Recompute TSS/IF on the fly so profile changes take effect
-    profile = db.get_profile(user_id) or config.DEFAULT_PROFILE
-    tss_list, if_list, pace_list, vdot_list, np_list = [], [], [], [], []
-    for _, row in df.iterrows():
-        streams = db.get_streams(int(row["id"]))
-        t, intf = A.best_tss(row, streams, profile)
-        tss_list.append(t)
-        if_list.append(intf)
-        pace_list.append(A.mps_to_pace_min_per_km(row.get("average_speed_mps")))
-        vdot_list.append(A.estimate_vo2max_from_race(row.get("distance_m"), row.get("moving_time_s")))
-        np_list.append(None)  # placeholder for normalized pace
-    df["tss"] = tss_list
-    df["intensity_factor"] = if_list
-    df["average_pace_min_per_km"] = pace_list
-    df["estimated_vo2max"] = vdot_list
+
+    # Fast pace (no DB hit needed, derived from average_speed_mps)
+    if "average_pace_min_per_km" not in df.columns or df["average_pace_min_per_km"].isna().any():
+        df["average_pace_min_per_km"] = df["average_speed_mps"].apply(A.mps_to_pace_min_per_km)
+
+    # VO2max estimate (no DB hit needed)
+    if "estimated_vo2max" not in df.columns or df["estimated_vo2max"].isna().any():
+        df["estimated_vo2max"] = df.apply(
+            lambda r: A.estimate_vo2max_from_race(r.get("distance_m"), r.get("moving_time_s")),
+            axis=1,
+        )
+
+    # Lazy TSS/IF compute (only for rows where tss is NULL) + persist to DB
+    missing_tss = df[df["tss"].isna()] if "tss" in df.columns else df
+    if not missing_tss.empty:
+        profile = db.get_profile(user_id) or config.DEFAULT_PROFILE
+        for idx, row in missing_tss.iterrows():
+            streams = db.get_streams(int(row["id"]))
+            t, intf = A.best_tss(row, streams, profile)
+            df.at[idx, "tss"] = t
+            df.at[idx, "intensity_factor"] = intf
+            # Persist ke DB biar load berikutnya skip compute
+            db.update_activity_metrics(user_id, int(row["id"]), {
+                "tss": t, "intensity_factor": intf,
+                "average_pace_min_per_km": df.at[idx, "average_pace_min_per_km"],
+                "estimated_vo2max": df.at[idx, "estimated_vo2max"],
+                "normalized_pace_min_per_km": None,
+            })
     return df
 
 

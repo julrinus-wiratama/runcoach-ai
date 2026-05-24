@@ -677,7 +677,16 @@ def get_latest_activity_date(user_id: int) -> Optional[str]:
 
 
 def get_activities_df(user_id: int, sport_filter: Optional[str] = "Run") -> pd.DataFrame:
-    q = "SELECT * FROM activities WHERE user_id = :uid"
+    # Skip raw_json (huge column, never read in dashboard) — bikin query ~10x lebih ringan
+    cols = (
+        "user_id, id, name, sport_type, start_date, start_date_local, timezone, "
+        "distance_m, moving_time_s, elapsed_time_s, total_elevation_gain_m, "
+        "average_speed_mps, max_speed_mps, average_heartrate, max_heartrate, "
+        "average_cadence, suffer_score, kudos_count, has_heartrate, "
+        "tss, intensity_factor, normalized_pace_min_per_km, "
+        "average_pace_min_per_km, estimated_vo2max"
+    )
+    q = f"SELECT {cols} FROM activities WHERE user_id = :uid"
     params: Dict[str, Any] = {"uid": user_id}
     if sport_filter:
         q += " AND sport_type LIKE :sf"
